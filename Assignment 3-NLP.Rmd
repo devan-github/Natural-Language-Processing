@@ -1,0 +1,324 @@
+---
+title: "Assignment 3 - NLP"
+author: "Devan Goto"
+date: "2/23/2017"
+output: html_document
+---
+
+## Libraries
+```{r}
+
+#Install packages to use libraries
+
+install.packages("NLP")
+install.packages("RColorBrewer")
+install.packages("topicmodels")
+
+#Make sure you install and load the following libraries
+
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(topicmodels)
+
+#IF USING A MAC PLEASE RUN THIS CODE
+Sys.setlocale("LC_ALL", "C")
+
+```
+
+## Import all document files and the list of weeks file
+```{r}
+
+#Given
+#Create a list of all the files
+file.list <- list.files(path="~/YOUR FILE PATH", pattern=".csv")
+
+#Loop over file list importing them and binding them together
+D1 <- do.call("rbind", lapply(file.list, read.csv, header = TRUE, stringsAsFactors = FALSE))
+
+D2 <- read.csv("~/YOUR FILE PATH/week-list.csv", header = TRUE)
+
+#View Current Working Directory: Use "getwd" function
+#Set New Working Directory: Use "setwd" function
+
+#Working Directory: A hierarchical file system dynamically associated with each process.  In order to get the file list function to work I must first set the working directory to A3-files.  Click on the "A3-files" folder -> Then click on "More," & "Set As Working Directory."  Doing this allows R to recognize the csv's needed to run the file list command.  
+
+#What I Used
+#Create a list of all the files
+
+setwd("~/HUDK 4051/Assignment 3 - NLP/A3-files")
+
+file.list <- list.files(path="/Users/Devan/HUDK 4051/Assignment 3 - NLP/A3-files", pattern=".csv")
+
+#Loop over file list importing them and binding them together
+
+D1 <- do.call("rbind", lapply(file.list, read.csv, header = TRUE, stringsAsFactors = FALSE))
+
+#Must change working directory again, to utilize the "week-list.csv"
+  
+setwd("~/HUDK 4051/Assignment 3 - NLP/A3-files/Week-List")
+
+D2 <- read.csv("~/HUDK 4051/Assignment 3 - NLP/A3-files/Week-List/week-list.csv", header = TRUE)
+
+#Set the working directory back to what it was originally.
+
+setwd("~/HUDK 4051/Assignment 3 - NLP")
+
+```
+
+## Clean the html tags from your text
+```{r}
+
+#gsub() function replaces all matches of a string, if the parameter is a string vector, returns a string vector of the same length and with the same attributes (after possible coercion to character). Elements of string vectors which are not substituted will be returned unchanged (including any declared encoding). 
+
+#gsub(pattern, replacement, x, ignore.case = FALSE, perl = FALSE, fixed = FALSE, useBytes = FALSE)
+ 
+#pattern: string to be matched
+#replacement: string for replacement
+#x: string or string vector
+#ignore.case: if TRUE, ignore case
+
+#Our code says... if "given pattern" then "replace with nothing".  To get rid of all html tags we used the following code.  
+
+D1$Notes2<-gsub("<.*?>","",D1$Notes)
+
+D1$Notes2<-gsub("nbsp","",D1$Notes2)
+
+D1$Notes2<-gsub("<[^>]*>", " ",D1$Notes2)
+
+D1$Notes2<-gsub("&;", " ",D1$Notes2)
+
+```
+
+## Merge with week list so you have a variable representing weeks for each entry 
+```{r}
+
+D1<-dplyr::left_join(D1, D2, by = "Title")
+
+```
+
+## Process text using the tm package - Code has been altered to account for changes in the tm package
+```{r}
+
+#Convert the data frame to the corpus format that the tm package uses
+corpus <- Corpus(VectorSource(D1$Notes2))
+
+#Remove spaces
+corpus <- tm_map(corpus, stripWhitespace)
+
+#Convert to lower case
+corpus <- tm_map(corpus, content_transformer(tolower)) 
+
+#Remove pre-defined stop words ('the', 'a', etc)
+corpus <- tm_map(corpus, removeWords, stopwords('english'))
+
+#Convert words to stems ("education" = "edu") for analysis, for more info see  http://tartarus.org/~martin/PorterStemmer/
+corpus <- tm_map(corpus, stemDocument, lazy=TRUE)
+
+#Remove numbers
+corpus <- tm_map(corpus, removeNumbers, lazy=TRUE)
+
+#remove punctuation
+corpus <- tm_map(corpus, removePunctuation, lazy=TRUE)
+```
+
+#### Create a Term Document Matrix
+```{r}
+
+#Convert corpus to a term document matrix - so each word can be analyzed individuallly
+tdm.corpus <- TermDocumentMatrix(corpus)
+
+```
+
+# Sentiment Analysis
+
+### Match words in corpus to lexicons of positive & negative words
+```{r}
+
+#Sentiment Analysis: The process of computationally identifying and categorizing opinions expressed in a piece of text, especially in order to determine whether the writer's attitude towards a particular topic, product, etc., is positive, negative, or neutral.
+
+#Set working directory to recognize txt files. 
+setwd("~/HUDK 4051/Assignment 3 - NLP/A3-files")
+
+#Upload positive and negative word lexicons
+positive <- readLines("positive-words.txt")
+negative <- readLines("negative-words.txt")
+
+#Search for matches between each word and the two lexicons
+D1$positive <- tm_term_score(tdm.corpus, positive)
+D1$negative <- tm_term_score(tdm.corpus, negative)
+
+#Generate an overall pos-neg score for each line
+D1$score <- D1$positive - D1$negative
+
+```
+
+## Generate a graph of the sum of the sentiment score over weeks
+```{r}
+
+#Create a table that reresents what we want to graph
+G1<-dplyr::select(D1,week.x,score)
+G1<-na.omit(G1)
+G2<-G1
+G2<-G2 %>% dplyr::group_by(week.x)%>%dplyr::summarise(sum(score))
+
+#Plot table to get graph
+
+plot(G2, col="red",main = "Sentiment Score Over Weeks")
+
+```
+
+# LDA Topic Modelling
+```{r}
+
+#Term Frequency Inverse Document Frequency
+dtm.tfi <- DocumentTermMatrix(corpus, control = list(weighting = weightTf))
+
+#Remove very uncommon terms (term freq inverse document freq < 0.1)
+dtm.tfi <- dtm.tfi[,dtm.tfi$v >= 0.1]
+
+#Remove non-zero entries
+rowTotals <- apply(dtm.tfi , 1, sum) 
+
+#Find the sum of words in each Document
+dtm.tfi   <- dtm.tfi[rowTotals> 0, ] 
+
+#Divide by sum across rows
+lda.model = LDA(dtm.tfi, k = 3, seed = 150)
+
+#Which terms are most common in each topic
+terms(lda.model)
+
+Topic 1   Topic 2   Topic 3 
+   "data" "network"    "data" 
+
+#Which documents belong to which topic
+topics(lda.model)
+
+tlm<-as.data.frame(topics(lda.model))
+
+```
+
+# Main Task 
+
+Your task is to generate a *single* visualization showing: 
+- Sentiment for each week and 
+- One important topic for that week
+
+```{r}
+
+#TASK 1: Find average (mean) sentiment per week
+
+M1<-G1
+M2<-M1 %>% dplyr::group_by(week.x)%>%dplyr::summarise(mean(score))
+
+#Task 2: Find one important topic for each week
+
+#Make a table with the needed variables
+Q1<-dplyr::select(D1,week.x,Notes2)
+
+#Omitting rows with na values
+Q1<-na.omit(Q1)
+Q2<-Q1
+
+#Deleting additional html tags I missed earlier
+Q2$Notes2<-gsub("<e2><80><90>","",Q2$Notes2)
+
+#Omitting rows with no values
+Q3<-Q2
+Q3[Q3==""]<-NA
+Q3<-na.omit(Q3)
+
+#Grouping data by week and combining all text to fit in each week.  This is done to text mine each week to identify a topic of interest each week.  ###When I did this some weeks yielded no text in the rows.  I am unsure why this happened, but I decided to continued onwards. 
+
+Q4<-Q3
+Q4<-Q3 %>% dplyr::group_by(week.x)%>%dplyr::summarise(paste(Notes2,sep = " ",collapse = "+"))
+
+#Prepare corpus and documentary term matrix, used to find one topic per week.
+
+#Convert the data frame to the corpus format that the tm package uses
+corpus2 <- Corpus(VectorSource(Q4$`paste(Notes2, sep = " ", collapse = "...`))
+
+#Remove spaces
+corpus2 <- tm_map(corpus2, stripWhitespace)
+
+#Convert to lower case
+corpus2 <- tm_map(corpus2, content_transformer(tolower)) 
+
+#Remove pre-defined stop words ('the', 'a', etc)
+corpus2 <- tm_map(corpus2, removeWords, stopwords('english'))
+
+#Convert words to stems ("education" = "edu") for analysis
+corpus2 <- tm_map(corpus2, stemDocument, lazy=TRUE)
+
+#Remove numbers
+corpus2 <- tm_map(corpus2, removeNumbers, lazy=TRUE)
+
+#Remove puncuation
+corpus2 <- tm_map(corpus2, removePunctuation, lazy=TRUE)
+
+#Convert corpus to a term document matrix - so each word can be analyzed individuallly
+tdm.corpus2 <- TermDocumentMatrix(corpus2)
+
+#Term Frequency Inverse Document Frequency
+dtm.tfi2 <- DocumentTermMatrix(corpus2, control = list(weighting = weightTf))
+
+#Remove very uncommon terms (term freq inverse document freq < 0.1)
+dtm.tfi2 <- dtm.tfi2[,dtm.tfi$v >= 0.1]
+
+#Remove non-zero entries
+rowTotals <- apply(dtm.tfi2 , 1, sum) 
+dtm.tfi2   <- dtm.tfi2[rowTotals> 0, ] 
+
+lda.model2 = LDA(dtm.tfi2, k = 3, seed = 150)
+
+#Find most common topics each week
+terms(lda.model2)
+ Topic 1   Topic 2   Topic 3   Topic 4 
+   "data" "student"   "skill"   "learn" 
+
+#Create Data Frame. This shows us a topic each week
+tlm2<-topics(lda.model2)
+tlm2<-as.data.frame(topics(lda.model2))
+
+#Clean & merge the data frame
+
+#rename column name
+tlm3<-tlm2
+colnames(tlm3) <- "topics"
+
+#Create "dummy variable ($delete)" on each data table (mean sentiment score per week (M3), & main topic per week(tlm4)), used to merge our two main data tables together 
+
+tlm4<-tlm3
+tlm4$delete<-row.names(tlm4)
+
+M3<-M2
+M3$delete<-row.names(M3)
+
+#Join them together with dummy variable
+M4<-dplyr::left_join(M3, tlm4, by = "delete")
+
+#Delete the dummy variable
+M4$delete<-NULL
+
+#Change column names (makes it easier to understand)
+M5<-M4
+colnames(M5) [1]<- "week"
+colnames(M5) [2]<- "score"
+
+#Change numbers into actual topics, in "topics" column (first change "topics" into character variables)
+
+M5$topics<-as.character(M5$topics)
+M5[M5$topics == "1",]$topics = "data"
+M5[M5$topics == "2",]$topics = "student"
+M5[M5$topics == "3",]$topics = "skill"
+M5[M5$topics == "4",]$topics = "learn"
+
+#Task 3: Finally plot your graph with your final data table (M5). This table has the three variables needed to create the visualization. 
+
+ggplot(data=M5, aes(x=week, y=score,fill=topics)) + geom_bar(stat = "identity") + scale_x_continuous(breaks = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14))+ ylab("Mean Sentiment Score") + ggtitle("Mean Sentiment For Each Week With Topics")
+   
+```
